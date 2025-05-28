@@ -3,1031 +3,1109 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 using DG.Tweening;
 using PokemonTCG.Core.Architecture;
 using PokemonTCG.Core.Data;
 using PokemonTCG.Cards.Runtime;
-using PokemonTCG.Game;
 
 namespace PokemonTCG.UI
 {
     /// <summary>
-    /// デッキエディターシステム - Phase 5
-    /// ドラッグ&ドロップによる視覚的デッキ構築
-    /// カードコレクション管理・検索・フィルタリング機能
+    /// Phase 5 - デッキエディターシステム統合制御
+    /// オフライン版PTCGL完全デッキ構築システム
+    /// ServiceLocator・EventBus・DOTween完全統合
     /// </summary>
     public class DeckEditorController : MonoBehaviour
     {
-        #region UI References
-        
+        #region GameObject References - DeckEditorUI構造
+
         [Header("=== Main Panels ===")]
-        public Transform collectionPanel;       // カードコレクション表示エリア
-        public Transform deckBuilderPanel;      // デッキ構築エリア
-        public Transform previewPanel;          // カード詳細プレビュー
-        
-        [Header("=== Collection UI ===")]
-        public ScrollRect collectionScrollRect; // コレクションスクロール
-        public GridLayoutGroup collectionGrid;  // コレクショングリッド
-        public GameObject cardSlotPrefab;       // カードスロットプレハブ
-        public TextMeshProUGUI collectionCountText; // コレクション枚数表示
-        
-        [Header("=== Deck Builder UI ===")]
-        public Transform deckListContainer;     // デッキリスト表示
-        public GameObject deckCardPrefab;       // デッキカード表示プレハブ
-        public TextMeshProUGUI deckCountText;   // デッキ枚数表示
-        public TextMeshProUGUI deckNameText;    // デッキ名表示
-        public Button saveDeckButton;           // デッキ保存ボタン
-        public Button loadDeckButton;           // デッキ読み込みボタン
-        public Button clearDeckButton;          // デッキクリアボタン
-        
-        [Header("=== Search & Filter UI ===")]
-        public InputField searchField;          // 検索フィールド
-        public Dropdown typeFilterDropdown;     // タイプフィルター
-        public Dropdown rarityFilterDropdown;   // レアリティフィルター
-        public Dropdown costFilterDropdown;     // コストフィルター
-        public Toggle showOnlyOwnedToggle;      // 所有カードのみ表示
-        
-        [Header("=== Card Preview ===")]
-        public Image previewCardImage;          // プレビュー画像
-        public TextMeshProUGUI previewCardName; // プレビューカード名
-        public TextMeshProUGUI previewCardDesc; // プレビュー説明
-        public TextMeshProUGUI previewCardStats;// プレビュー能力値
-        
-        [Header("=== Deck Management ===")]
-        public InputField deckNameInput;        // デッキ名入力
-        public Dropdown deckTemplateDropdown;   // デッキテンプレート
-        public Button exportDeckButton;         // デッキエクスポート
-        public Button importDeckButton;         // デッキインポート
-        
-        [Header("=== Settings ===")]
-        public int maxDeckSize = 60;            // 最大デッキサイズ
-        public int minDeckSize = 40;            // 最小デッキサイズ
-        public float cardAnimationSpeed = 0.3f; // カードアニメーション速度
-        
+        public Transform collectionPanel;          // CollectionPanel - カードコレクション
+        public Transform deckBuilderPanel;         // DeckBuilderPanel - デッキ構築
+        public Transform previewPanel;             // PreviewPanel - カードプレビュー
+
+        [Header("=== Collection Panel Components ===")]
+        public ScrollRect collectionScrollView;    // CollectionScrollView
+        public Transform collectionContent;       // CollectionContent - GridLayoutGroup
+        public InputField searchInputField;       // SearchInputField
+        public Button pokemonFilterButton;        // PokemonFilterButton
+        public Button trainerFilterButton;       // TrainerFilterButton  
+        public Button energyFilterButton;        // EnergyFilterButton
+
+        [Header("=== Deck Builder Panel Components ===")]
+        public ScrollRect deckScrollView;         // DeckScrollView
+        public Transform deckContent;             // DeckContent - VerticalLayoutGroup
+        public Text deckCountText;                // デッキ枚数表示
+        public Text deckStatsText;                // デッキ統計表示
+
+        [Header("=== Preview Panel Components ===")]
+        public Image cardPreviewImage;            // カードプレビュー画像
+        public Text cardDetailsText;              // カード詳細テキスト
+
+        [Header("=== Card Display Settings ===")]
+        public GameObject cardDisplayPrefab;      // カード表示用プレハブ
+        public Sprite unknownCardSprite;          // unknown.jpg
+        public int cardsPerRow = 6;              // コレクション表示列数
+        public Vector2 cardSize = new Vector2(120, 168); // カードサイズ
+        public float cardSpacing = 10f;          // カード間隔
+
+        [Header("=== Animation Settings ===")]
+        public float cardAnimationSpeed = 0.3f;
+        public AnimationCurve cardMoveCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
+        public Color selectedCardColor = new Color(1, 1, 0, 0.8f);
+        public Color filterActiveColor = new Color(0, 1, 0, 0.8f);
+
         #endregion
 
-        #region Private Fields
-        
-        // Core Systems
+        #region Private Fields - システム制御
+
+        // システム参照
         private CardDatabase cardDatabase;
-        private GameStateManager gameStateManager;
         private bool isInitialized = false;
-        
-        // Card Collections
-        private List<Card> allCards = new List<Card>();
-        private List<Card> filteredCards = new List<Card>();
-        private List<Card> ownedCards = new List<Card>();
-        private Dictionary<string, int> cardCounts = new Dictionary<string, int>();
-        
-        // Current Deck
+
+        // デッキデータ
         private List<Card> currentDeck = new List<Card>();
         private Dictionary<string, int> deckCardCounts = new Dictionary<string, int>();
-        private string currentDeckName = "New Deck";
-        
-        // UI State
-        private List<DeckCardSlot> collectionSlots = new List<DeckCardSlot>();
-        private List<DeckListItem> deckListItems = new List<DeckListItem>();
-        private Card previewedCard = null;
-        private DeckCardSlot draggedSlot = null;
-        
-        // Filters
-        private string searchQuery = "";
-        private CardType selectedType = CardType.All;
-        private CardRarity selectedRarity = CardRarity.All;
-        private int selectedCost = -1; // -1 = All
-        private bool showOnlyOwned = false;
-        
+        private int maxDeckSize = 60;
+        private int minDeckSize = 60;
+
+        // コレクション表示
+        private List<Card> allCards = new List<Card>();
+        private List<Card> filteredCards = new List<Card>();
+        private List<GameObject> displayedCardObjects = new List<GameObject>();
+
+        // フィルター状態
+        private CardFilterType currentFilter = CardFilterType.All;
+        private string currentSearchText = "";
+
+        // 選択状態
+        private Card selectedCard;
+        private GameObject selectedCardObject;
+
+        // ドラッグ&ドロップ
+        private bool isDragging = false;
+        private GameObject draggedCardObject;
+        private Vector3 dragOffset;
+
+        // アニメーション管理
+        private List<Tween> activeTweens = new List<Tween>();
+
+        #endregion
+
+        #region Unity Lifecycle
+
+        private void Awake()
+        {
+            // DeckEditorController自動初期化
+            StartCoroutine(DelayedInitialization());
+        }
+
+        private void Start()
+        {
+            if (!isInitialized)
+            {
+                Initialize();
+            }
+        }
+
+        private System.Collections.IEnumerator DelayedInitialization()
+        {
+            // 他のシステムの初期化を待つ
+            yield return null;
+            yield return null; // 2フレーム待機
+            
+            if (!isInitialized)
+            {
+                Initialize();
+            }
+        }
+
         #endregion
 
         #region Initialization
-        
+
         public void Initialize()
         {
             if (isInitialized) return;
-            
-            Debug.Log("[DeckEditorController] Initializing Deck Editor...");
-            
-            // Get system references
+
+            Debug.Log("[DeckEditorController] Initializing Deck Editor System...");
+
+            // システム参照取得
             InitializeSystemReferences();
-            
-            // Initialize UI components
-            InitializeUIComponents();
-            
-            // Load card database
+
+            // UI参照自動検出
+            AutoDetectUIReferences();
+
+            // UI設定
+            SetupUI();
+
+            // イベント購読
+            SubscribeToEvents();
+
+            // カードデータ読み込み
             LoadCardDatabase();
-            
-            // Setup event listeners
-            SetupEventListeners();
-            
-            // Initialize default deck
-            InitializeNewDeck();
-            
+
+            // 初期表示
+            RefreshCollectionDisplay();
+
             isInitialized = true;
-            Debug.Log("[DeckEditorController] Deck Editor initialized successfully");
+            Debug.Log("[DeckEditorController] Deck Editor System initialized successfully");
+
+            // デッキエディター起動イベント
+            EventBus.Emit(new DeckEditorOpenedEvent());
         }
-        
+
         private void InitializeSystemReferences()
         {
+            // CardDatabase参照
             cardDatabase = ServiceLocator.Get<CardDatabase>();
-            gameStateManager = ServiceLocator.Get<GameStateManager>();
-            
             if (cardDatabase == null)
             {
-                Debug.LogWarning("[DeckEditorController] CardDatabase not found - creating default");
-                CreateDefaultCardDatabase();
+                Debug.LogWarning("[DeckEditorController] CardDatabase not found - creating temporary database");
+                cardDatabase = CreateTemporaryDatabase();
             }
         }
-        
-        private void InitializeUIComponents()
+
+        private void AutoDetectUIReferences()
         {
-            // Initialize collection grid
-            if (collectionGrid != null)
-            {
-                collectionGrid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-                collectionGrid.constraintCount = 6; // 6 columns
-                collectionGrid.spacing = new Vector2(10f, 10f);
-                collectionGrid.cellSize = new Vector2(120f, 168f); // Card aspect ratio
-            }
-            
-            // Initialize dropdowns
-            InitializeDropdowns();
-            
-            // Initialize text displays
-            UpdateCountDisplays();
+            // 自動UI参照検出 - 手動設定されていない場合のフォールバック
+            if (collectionPanel == null)
+                collectionPanel = transform.Find("DeckEditorManager/CollectionPanel");
+
+            if (deckBuilderPanel == null)
+                deckBuilderPanel = transform.Find("DeckEditorManager/DeckBuilderPanel");
+
+            if (previewPanel == null)
+                previewPanel = transform.Find("DeckEditorManager/PreviewPanel");
+
+            if (collectionScrollView == null)
+                collectionScrollView = collectionPanel?.GetComponentInChildren<ScrollRect>();
+
+            if (collectionContent == null)
+                collectionContent = collectionScrollView?.content;
+
+            if (searchInputField == null)
+                searchInputField = collectionPanel?.GetComponentInChildren<InputField>();
+
+            if (deckScrollView == null)
+                deckScrollView = deckBuilderPanel?.GetComponentInChildren<ScrollRect>();
+
+            if (deckContent == null)
+                deckContent = deckScrollView?.content;
+
+            // フィルターボタン自動検出
+            AutoDetectFilterButtons();
         }
-        
-        private void InitializeDropdowns()
+
+        private void AutoDetectFilterButtons()
         {
-            // Type filter dropdown
-            if (typeFilterDropdown != null)
+            if (collectionPanel == null) return;
+
+            var buttons = collectionPanel.GetComponentsInChildren<Button>();
+            foreach (var button in buttons)
             {
-                typeFilterDropdown.ClearOptions();
-                List<string> typeOptions = Enum.GetNames(typeof(CardType)).ToList();
-                typeFilterDropdown.AddOptions(typeOptions);
-            }
-            
-            // Rarity filter dropdown
-            if (rarityFilterDropdown != null)
-            {
-                rarityFilterDropdown.ClearOptions();
-                List<string> rarityOptions = Enum.GetNames(typeof(CardRarity)).ToList();
-                rarityFilterDropdown.AddOptions(rarityOptions);
-            }
-            
-            // Cost filter dropdown
-            if (costFilterDropdown != null)
-            {
-                costFilterDropdown.ClearOptions();
-                List<string> costOptions = new List<string> { "All", "0", "1", "2", "3", "4", "5+" };
-                costFilterDropdown.AddOptions(costOptions);
-            }
-        }
-        
-        private void LoadCardDatabase()
-        {
-            if (cardDatabase != null)
-            {
-                // Load all cards from database
-                allCards = cardDatabase.GetAllCards();
-                
-                // Simulate owned cards (in real implementation, load from save data)
-                ownedCards = allCards.Take(allCards.Count / 2).ToList(); // Own half of all cards
-                
-                // Initialize card counts
-                foreach (var card in ownedCards)
+                switch (button.name)
                 {
-                    string cardId = card.CardData.CardId;
-                    cardCounts[cardId] = UnityEngine.Random.Range(1, 4); // 1-3 copies of each card
+                    case "PokemonFilterButton":
+                        pokemonFilterButton = button;
+                        break;
+                    case "TrainerFilterButton":
+                        trainerFilterButton = button;
+                        break;
+                    case "EnergyFilterButton":
+                        energyFilterButton = button;
+                        break;
                 }
             }
-            else
+        }
+
+        private void SetupUI()
+        {
+            // GridLayoutGroup設定
+            SetupCollectionGrid();
+
+            // フィルターボタン設定
+            SetupFilterButtons();
+
+            // 検索フィールド設定
+            SetupSearchField();
+
+            // ドラッグ&ドロップ設定
+            SetupDragAndDrop();
+
+            // 初期状態設定
+            SetInitialState();
+        }
+
+        private void SetupCollectionGrid()
+        {
+            if (collectionContent == null) return;
+
+            var gridLayout = collectionContent.GetComponent<GridLayoutGroup>();
+            if (gridLayout != null)
             {
-                CreateSampleCards();
+                gridLayout.cellSize = cardSize;
+                gridLayout.spacing = Vector2.one * cardSpacing;
+                gridLayout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+                gridLayout.constraintCount = cardsPerRow;
+                gridLayout.childAlignment = TextAnchor.UpperLeft;
             }
-            
-            // Apply initial filtering
-            ApplyFilters();
-        }
-        
-        private void CreateDefaultCardDatabase()
-        {
-            // Create a temporary card database for testing
-            // In real implementation, this would be loaded from resources
-            Debug.Log("[DeckEditorController] Creating default card database for testing");
-            CreateSampleCards();
-        }
-        
-        private void CreateSampleCards()
-        {
-            // Create sample cards for testing
-            allCards.Clear();
-            ownedCards.Clear();
-            
-            // Sample Pokemon cards
-            for (int i = 1; i <= 20; i++)
+
+            var contentSizeFitter = collectionContent.GetComponent<ContentSizeFitter>();
+            if (contentSizeFitter == null)
             {
-                var pokemonData = ScriptableObject.CreateInstance<PokemonCardData>();
-                pokemonData.CardId = $"POKEMON_{i:D3}";
-                pokemonData.CardName = $"Test Pokemon {i}";
-                pokemonData.HP = 100 + (i * 10);
-                pokemonData.Type = (PokemonType)(i % 8); // Cycle through types
+                contentSizeFitter = collectionContent.gameObject.AddComponent<ContentSizeFitter>();
+            }
+            contentSizeFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        }
+
+        private void SetupFilterButtons()
+        {
+            if (pokemonFilterButton != null)
+            {
+                pokemonFilterButton.onClick.RemoveAllListeners();
+                pokemonFilterButton.onClick.AddListener(() => SetFilter(CardFilterType.Pokemon));
+            }
+
+            if (trainerFilterButton != null)
+            {
+                trainerFilterButton.onClick.RemoveAllListeners();
+                trainerFilterButton.onClick.AddListener(() => SetFilter(CardFilterType.Trainer));
+            }
+
+            if (energyFilterButton != null)
+            {
+                energyFilterButton.onClick.RemoveAllListeners();
+                energyFilterButton.onClick.AddListener(() => SetFilter(CardFilterType.Energy));
+            }
+        }
+
+        private void SetupSearchField()
+        {
+            if (searchInputField != null)
+            {
+                searchInputField.onValueChanged.RemoveAllListeners();
+                searchInputField.onValueChanged.AddListener(OnSearchTextChanged);
                 
-                var pokemonCard = new Card();
-                pokemonCard.SetCardData(pokemonData);
-                allCards.Add(pokemonCard);
-                
-                if (i <= 15) // Own 15 out of 20 Pokemon
+                // プレースホルダー設定
+                var placeholder = searchInputField.placeholder as Text;
+                if (placeholder == null)
                 {
-                    ownedCards.Add(pokemonCard);
-                    cardCounts[pokemonData.CardId] = UnityEngine.Random.Range(1, 4);
+                    var placeholderObj = new GameObject("Placeholder");
+                    placeholderObj.transform.SetParent(searchInputField.transform, false);
+                    placeholder = placeholderObj.AddComponent<Text>();
+                    placeholder.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                    placeholder.color = Color.gray;
+                    searchInputField.placeholder = placeholder;
                 }
+                placeholder.text = "Search cards...";
             }
-            
-            // Sample Trainer cards
-            for (int i = 1; i <= 15; i++)
-            {
-                var trainerData = ScriptableObject.CreateInstance<TrainerCardData>();
-                trainerData.CardId = $"TRAINER_{i:D3}";
-                trainerData.CardName = $"Test Trainer {i}";
-                trainerData.TrainerType = (TrainerType)(i % 3);
-                
-                var trainerCard = new Card();
-                trainerCard.SetCardData(trainerData);
-                allCards.Add(trainerCard);
-                
-                if (i <= 10) // Own 10 out of 15 Trainers
-                {
-                    ownedCards.Add(trainerCard);
-                    cardCounts[trainerData.CardId] = UnityEngine.Random.Range(1, 4);
-                }
-            }
-            
-            // Sample Energy cards
-            for (int i = 1; i <= 12; i++)
-            {
-                var energyData = ScriptableObject.CreateInstance<EnergyCardData>();
-                energyData.CardId = $"ENERGY_{i:D3}";
-                energyData.CardName = $"Test Energy {i}";
-                energyData.EnergyType = (EnergyType)(i % 9);
-                
-                var energyCard = new Card();
-                energyCard.SetCardData(energyData);
-                allCards.Add(energyCard);
-                
-                ownedCards.Add(energyCard); // Own all energy cards
-                cardCounts[energyData.CardId] = UnityEngine.Random.Range(2, 6);
-            }
-            
-            Debug.Log($"[DeckEditorController] Created {allCards.Count} sample cards ({ownedCards.Count} owned)");
         }
-        
-        private void SetupEventListeners()
+
+        private void SetupDragAndDrop()
         {
-            // Search field
-            if (searchField != null)
-                searchField.onValueChanged.AddListener(OnSearchChanged);
-            
-            // Filter dropdowns
-            if (typeFilterDropdown != null)
-                typeFilterDropdown.onValueChanged.AddListener(OnTypeFilterChanged);
-            
-            if (rarityFilterDropdown != null)
-                rarityFilterDropdown.onValueChanged.AddListener(OnRarityFilterChanged);
-                
-            if (costFilterDropdown != null)
-                costFilterDropdown.onValueChanged.AddListener(OnCostFilterChanged);
-            
-            // Show only owned toggle
-            if (showOnlyOwnedToggle != null)
-                showOnlyOwnedToggle.onValueChanged.AddListener(OnShowOnlyOwnedChanged);
-            
-            // Deck management buttons
-            if (saveDeckButton != null)
-                saveDeckButton.onClick.AddListener(SaveCurrentDeck);
-                
-            if (loadDeckButton != null)
-                loadDeckButton.onClick.AddListener(LoadDeck);
-                
-            if (clearDeckButton != null)
-                clearDeckButton.onClick.AddListener(ClearDeck);
-                
-            if (exportDeckButton != null)
-                exportDeckButton.onClick.AddListener(ExportDeck);
-                
-            if (importDeckButton != null)
-                importDeckButton.onClick.AddListener(ImportDeck);
+            // ドラッグ&ドロップシステムはカード生成時に個別設定
         }
-        
-        private void InitializeNewDeck()
+
+        private void SetInitialState()
         {
+            // フィルター初期状態
+            currentFilter = CardFilterType.All;
+            currentSearchText = "";
+
+            // デッキ初期化
             currentDeck.Clear();
             deckCardCounts.Clear();
-            currentDeckName = "New Deck";
-            
-            if (deckNameInput != null)
-                deckNameInput.text = currentDeckName;
-                
-            UpdateDeckDisplay();
-            UpdateCountDisplays();
+
+            // プレビューパネル初期状態
+            if (previewPanel != null)
+            {
+                previewPanel.gameObject.SetActive(false);
+            }
         }
-        
+
+        private void SubscribeToEvents()
+        {
+            EventBus.On<CardDatabaseLoadedEvent>(OnCardDatabaseLoaded);
+            EventBus.On<DeckValidationRequestEvent>(OnDeckValidationRequested);
+        }
+
         #endregion
 
-        #region Public Interface
-        
-        public void ShowDeckEditor()
+        #region Card Database Management
+
+        private void LoadCardDatabase()
         {
-            gameObject.SetActive(true);
-            if (!isInitialized)
-                Initialize();
-            
-            RefreshCollectionDisplay();
-        }
-        
-        public void HideDeckEditor()
-        {
-            gameObject.SetActive(false);
-        }
-        
-        public void AddCardToDeck(Card card)
-        {
-            if (card == null || currentDeck.Count >= maxDeckSize) return;
-            
-            string cardId = card.CardData.CardId;
-            
-            // Check if we have copies of this card
-            if (!cardCounts.ContainsKey(cardId) || cardCounts[cardId] <= 0) return;
-            
-            // Check deck limit for this card (max 4 copies in standard TCG)
-            int currentCount = deckCardCounts.GetValueOrDefault(cardId, 0);
-            if (currentCount >= 4) return;
-            
-            // Add card to deck
-            currentDeck.Add(card);
-            deckCardCounts[cardId] = currentCount + 1;
-            
-            // Update displays
-            UpdateDeckDisplay();
-            UpdateCountDisplays();
-            
-            // Animation
-            AnimateCardAddToDeck(card);
-            
-            Debug.Log($"[DeckEditorController] Added {card.CardData.CardName} to deck ({deckCardCounts[cardId]}/4)");
-        }
-        
-        public void RemoveCardFromDeck(Card card)
-        {
-            if (card == null) return;
-            
-            string cardId = card.CardData.CardId;
-            
-            if (currentDeck.Remove(card))
+            if (cardDatabase == null) return;
+
+            try
             {
-                int currentCount = deckCardCounts.GetValueOrDefault(cardId, 0);
-                if (currentCount > 1)
+                // CardDatabaseから全カードデータを取得
+                var allCardData = cardDatabase.AllCards;
+                allCards.Clear();
+                
+                // BaseCardDataからCardオブジェクトを作成
+                foreach (var cardData in allCardData)
                 {
-                    deckCardCounts[cardId] = currentCount - 1;
-                }
-                else
-                {
-                    deckCardCounts.Remove(cardId);
+                    // Card GameObjectを作成
+                    GameObject cardObj = new GameObject($"Card_{cardData.CardName}");
+                    var card = cardObj.AddComponent<Card>();
+                    
+                    // Cardを初期化（InstanceIdは適当に設定）
+                    int instanceId = allCards.Count + 1;
+                    card.Initialize(cardData, "Editor", instanceId);
+                    
+                    allCards.Add(card);
                 }
                 
-                // Update displays
-                UpdateDeckDisplay();
-                UpdateCountDisplays();
-                
-                // Animation
-                AnimateCardRemoveFromDeck(card);
-                
-                Debug.Log($"[DeckEditorController] Removed {card.CardData.CardName} from deck");
+                Debug.Log($"[DeckEditorController] Loaded {allCards.Count} cards from database");
+
+                // フィルタリング適用
+                ApplyCurrentFilter();
             }
-        }
-        
-        public bool IsDeckValid()
-        {
-            // Check deck size
-            if (currentDeck.Count < minDeckSize || currentDeck.Count > maxDeckSize)
-                return false;
-            
-            // Check for required card ratios (simplified)
-            int pokemonCount = currentDeck.Count(c => c.IsPokemonCard);
-            int energyCount = currentDeck.Count(c => c.IsEnergyCard);
-            
-            // Must have at least some Pokemon and Energy
-            return pokemonCount >= 8 && energyCount >= 8;
-        }
-        
-        public List<Card> GetCurrentDeck()
-        {
-            return new List<Card>(currentDeck);
-        }
-        
-        public void LoadDeckFromList(List<Card> deckCards, string deckName = "Loaded Deck")
-        {
-            ClearDeck();
-            
-            foreach (var card in deckCards)
+            catch (Exception ex)
             {
-                AddCardToDeck(card);
+                Debug.LogError($"[DeckEditorController] Failed to load card database: {ex.Message}");
+                CreateSampleCards();
             }
-            
-            currentDeckName = deckName;
-            if (deckNameInput != null)
-                deckNameInput.text = currentDeckName;
-                
-            UpdateCountDisplays();
         }
-        
+
+        private CardDatabase CreateTemporaryDatabase()
+        {
+            // CardDatabaseが見つからない場合、一時的なものを作成
+            Debug.LogWarning("[DeckEditorController] CardDatabase not found - creating temporary database");
+            return null; // 暫定的にnullを返してサンプルカード作成へ
+        }
+
+        private void CreateSampleCards()
+        {
+            // Phase 5完成まで使用する最小限のサンプルカード
+            allCards.Clear();
+
+            // シンプルなダミーカードを作成
+            for (int i = 1; i <= 44; i++)
+            {
+                var dummyCard = CreateDummyCard($"Sample Card {i}", i);
+                allCards.Add(dummyCard);
+            }
+
+            Debug.Log($"[DeckEditorController] Created {allCards.Count} sample cards");
+        }
+
+        private Card CreateDummyCard(string name, int id)
+        {
+            // 最小限のダミーカードを作成
+            GameObject cardObj = new GameObject($"DummyCard_{name}");
+            var card = cardObj.AddComponent<Card>();
+            
+            // ダミーのBaseCardDataを作成（実際にはScriptableObjectが必要）
+            // 暫定的に初期化をスキップ
+            
+            return card;
+        }
+
+        #endregion
+
+        #region Collection Display
+
+        public void RefreshCollectionDisplay()
+        {
+            if (!isInitialized || collectionContent == null) return;
+
+            // 既存カード表示をクリア
+            ClearDisplayedCards();
+
+            // フィルタリング済みカードを表示
+            DisplayFilteredCards();
+
+            Debug.Log($"[DeckEditorController] Displaying {filteredCards.Count} cards");
+        }
+
+        private void ClearDisplayedCards()
+        {
+            foreach (var cardObj in displayedCardObjects)
+            {
+                if (cardObj != null)
+                {
+                    DestroyImmediate(cardObj);
+                }
+            }
+            displayedCardObjects.Clear();
+        }
+
+        private void DisplayFilteredCards()
+        {
+            for (int i = 0; i < filteredCards.Count; i++)
+            {
+                var card = filteredCards[i];
+                var cardObject = CreateCardDisplayObject(card, i);
+                displayedCardObjects.Add(cardObject);
+            }
+        }
+
+        private GameObject CreateCardDisplayObject(Card card, int index)
+        {
+            // カード表示オブジェクト作成
+            GameObject cardObj = new GameObject($"Card_{card.CardData?.CardName ?? "Unknown"}_{index}");
+            cardObj.transform.SetParent(collectionContent, false);
+
+            // Image コンポーネント追加
+            var image = cardObj.AddComponent<Image>();
+            image.sprite = unknownCardSprite; // Phase 5では高解像度画像システム実装予定
+            image.preserveAspect = true;
+
+            // Button コンポーネント追加
+            var button = cardObj.AddComponent<Button>();
+            button.onClick.AddListener(() => OnCardClicked(card, cardObj));
+
+            // ドラッグハンドラー追加
+            var dragHandler = cardObj.AddComponent<CardDragHandler>();
+            dragHandler.Initialize(card, this);
+
+            // RectTransform設定
+            var rectTransform = cardObj.GetComponent<RectTransform>();
+            rectTransform.sizeDelta = cardSize;
+
+            // カード情報表示（テキスト追加）
+            AddCardInfoText(cardObj, card);
+
+            return cardObj;
+        }
+
+        private void AddCardInfoText(GameObject cardObj, Card card)
+        {
+            // カード名表示
+            GameObject textObj = new GameObject("CardNameText");
+            textObj.transform.SetParent(cardObj.transform, false);
+
+            var text = textObj.AddComponent<Text>();
+            text.text = card.CardData?.CardName ?? "Unknown Card";
+            text.fontSize = 12;
+            text.color = Color.white;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            var textRect = textObj.GetComponent<RectTransform>();
+            textRect.anchorMin = new Vector2(0, 0);
+            textRect.anchorMax = new Vector2(1, 0.2f);
+            textRect.sizeDelta = Vector2.zero;
+            textRect.anchoredPosition = Vector2.zero;
+        }
+
         #endregion
 
         #region Filtering & Search
-        
-        private void ApplyFilters()
+
+        public void SetFilter(CardFilterType filterType)
+        {
+            currentFilter = filterType;
+            ApplyCurrentFilter();
+            UpdateFilterButtonStates();
+            RefreshCollectionDisplay();
+
+            Debug.Log($"[DeckEditorController] Filter changed to: {filterType}");
+        }
+
+        private void ApplyCurrentFilter()
         {
             filteredCards.Clear();
-            
-            var cardsToFilter = showOnlyOwned ? ownedCards : allCards;
-            
-            foreach (var card in cardsToFilter)
+
+            foreach (var card in allCards)
             {
-                if (PassesFilters(card))
+                if (PassesFilter(card) && PassesSearch(card))
                 {
                     filteredCards.Add(card);
                 }
             }
+
+            // 名前順でソート
+            filteredCards = filteredCards.OrderBy(c => c.CardData?.CardName ?? "").ToList();
+        }
+
+        private bool PassesFilter(Card card)
+        {
+            if (card?.CardData == null) return false;
             
-            // Sort filtered cards
-            SortFilteredCards();
-            
-            // Update collection display
+            switch (currentFilter)
+            {
+                case CardFilterType.Pokemon:
+                    return card.CardData.CardType == CardType.Pokemon;
+                case CardFilterType.Trainer:
+                    return card.CardData.CardType == CardType.Trainer;
+                case CardFilterType.Energy:
+                    return card.CardData.CardType == CardType.Energy;
+                case CardFilterType.All:
+                default:
+                    return true;
+            }
+        }
+
+        private bool PassesSearch(Card card)
+        {
+            if (string.IsNullOrEmpty(currentSearchText) || card?.CardData == null)
+                return true;
+
+            return card.CardData.CardName.ToLower().Contains(currentSearchText.ToLower());
+        }
+
+        private void UpdateFilterButtonStates()
+        {
+            // フィルターボタンの視覚状態更新
+            SetButtonState(pokemonFilterButton, currentFilter == CardFilterType.Pokemon);
+            SetButtonState(trainerFilterButton, currentFilter == CardFilterType.Trainer);
+            SetButtonState(energyFilterButton, currentFilter == CardFilterType.Energy);
+        }
+
+        private void SetButtonState(Button button, bool isActive)
+        {
+            if (button == null) return;
+
+            var colors = button.colors;
+            colors.normalColor = isActive ? filterActiveColor : Color.white;
+            button.colors = colors;
+        }
+
+        private void OnSearchTextChanged(string searchText)
+        {
+            currentSearchText = searchText;
+            ApplyCurrentFilter();
             RefreshCollectionDisplay();
-            
-            Debug.Log($"[DeckEditorController] Applied filters: {filteredCards.Count} cards match criteria");
         }
-        
-        private bool PassesFilters(Card card)
-        {
-            // Search query filter
-            if (!string.IsNullOrEmpty(searchQuery))
-            {
-                if (!card.CardData.CardName.ToLower().Contains(searchQuery.ToLower()))
-                    return false;
-            }
-            
-            // Type filter
-            if (selectedType != CardType.All)
-            {
-                if (!CardMatchesType(card, selectedType))
-                    return false;
-            }
-            
-            // Cost filter
-            if (selectedCost >= 0)
-            {
-                int cardCost = GetCardCost(card);
-                if (selectedCost == 5 && cardCost < 5) return false; // 5+ filter
-                if (selectedCost < 5 && cardCost != selectedCost) return false;
-            }
-            
-            return true;
-        }
-        
-        private bool CardMatchesType(Card card, CardType type)
-        {
-            if (card.IsPokemonCard) return type == CardType.Pokemon;
-            if (card.IsTrainerCard) return type == CardType.Trainer;
-            if (card.IsEnergyCard) return type == CardType.Energy;
-            return false;
-        }
-        
-        private int GetCardCost(Card card)
-        {
-            if (card.IsPokemonCard)
-            {
-                var pokemonData = card.GetPokemonData();
-                return pokemonData?.Attacks?.FirstOrDefault()?.EnergyCost?.Count ?? 0;
-            }
-            return 0;
-        }
-        
-        private void SortFilteredCards()
-        {
-            filteredCards = filteredCards.OrderBy(c => c.CardData.CardName).ToList();
-        }
-        
+
         #endregion
 
-        #region UI Updates
-        
-        private void RefreshCollectionDisplay()
-        {
-            if (collectionPanel == null) return;
-            
-            // Clear existing slots
-            ClearCollectionSlots();
-            
-            // Create slots for filtered cards
-            foreach (var card in filteredCards)
-            {
-                CreateCollectionSlot(card);
-            }
-            
-            UpdateCountDisplays();
-        }
-        
-        private void ClearCollectionSlots()
-        {
-            foreach (var slot in collectionSlots)
-            {
-                if (slot != null && slot.gameObject != null)
-                    DestroyImmediate(slot.gameObject);
-            }
-            collectionSlots.Clear();
-        }
-        
-        private void CreateCollectionSlot(Card card)
-        {
-            if (cardSlotPrefab == null || collectionPanel == null) return;
-            
-            GameObject slotObj = Instantiate(cardSlotPrefab, collectionPanel);
-            var slot = slotObj.GetComponent<DeckCardSlot>();
-            
-            if (slot == null)
-                slot = slotObj.AddComponent<DeckCardSlot>();
-            
-            // Initialize slot
-            slot.Initialize(card, this);
-            
-            // Set card count
-            string cardId = card.CardData.CardId;
-            int ownedCount = cardCounts.GetValueOrDefault(cardId, 0);
-            int usedCount = deckCardCounts.GetValueOrDefault(cardId, 0);
-            slot.SetCardCount(ownedCount, usedCount);
-            
-            collectionSlots.Add(slot);
-        }
-        
-        private void UpdateDeckDisplay()
-        {
-            if (deckListContainer == null) return;
-            
-            // Clear existing items
-            ClearDeckListItems();
-            
-            // Group cards by type for better organization
-            var groupedCards = currentDeck.GroupBy(c => c.CardData.CardId)
-                                         .OrderBy(g => g.First().CardData.CardName);
-            
-            // Create deck list items
-            foreach (var cardGroup in groupedCards)
-            {
-                CreateDeckListItem(cardGroup.First(), cardGroup.Count());
-            }
-        }
-        
-        private void ClearDeckListItems()
-        {
-            foreach (var item in deckListItems)
-            {
-                if (item != null && item.gameObject != null)
-                    DestroyImmediate(item.gameObject);
-            }
-            deckListItems.Clear();
-        }
-        
-        private void CreateDeckListItem(Card card, int count)
-        {
-            if (deckCardPrefab == null || deckListContainer == null) return;
-            
-            GameObject itemObj = Instantiate(deckCardPrefab, deckListContainer);
-            var item = itemObj.GetComponent<DeckListItem>();
-            
-            if (item == null)
-                item = itemObj.AddComponent<DeckListItem>();
-                
-            item.Initialize(card, count, this);
-            deckListItems.Add(item);
-        }
-        
-        private void UpdateCountDisplays()
-        {
-            // Collection count
-            if (collectionCountText != null)
-            {
-                int totalCards = showOnlyOwned ? ownedCards.Count : allCards.Count;
-                collectionCountText.text = $"Collection: {filteredCards.Count}/{totalCards}";
-            }
-            
-            // Deck count
-            if (deckCountText != null)
-            {
-                Color textColor = IsDeckValid() ? Color.green : Color.red;
-                deckCountText.text = $"Deck: {currentDeck.Count}/{maxDeckSize}";
-                deckCountText.color = textColor;
-            }
-            
-            // Deck name
-            if (deckNameText != null)
-            {
-                deckNameText.text = currentDeckName;
-            }
-        }
-        
-        #endregion
+        #region Card Selection & Preview
 
-        #region Animations
-        
-        private void AnimateCardAddToDeck(Card card)
+        public void OnCardClicked(Card card, GameObject cardObject)
         {
-            // Find the collection slot for this card
-            var slot = collectionSlots.FirstOrDefault(s => s.GetCard() == card);
-            if (slot != null)
-            {
-                AnimateCardMovement(slot.transform, deckBuilderPanel, 0.3f);
-            }
-        }
-        
-        private void AnimateCardRemoveFromDeck(Card card)
-        {
-            // Animate card returning to collection
-            if (deckListItems.Count > 0)
-            {
-                AnimateCardMovement(deckListItems[0].transform, collectionPanel, 0.3f);
-            }
-        }
-        
-        private void AnimateCardMovement(Transform from, Transform to, float duration)
-        {
-            if (from == null || to == null) return;
-            
-            // Create temporary visual for animation
-            GameObject animCard = new GameObject("AnimCard");
-            Image cardImage = animCard.AddComponent<Image>();
-            cardImage.sprite = null; // Would use actual card sprite
-            cardImage.color = Color.yellow; // Placeholder color
-            
-            RectTransform cardRect = animCard.GetComponent<RectTransform>();
-            cardRect.SetParent(transform);
-            cardRect.position = from.position;
-            cardRect.sizeDelta = new Vector2(80, 112);
-            
-            // Animate movement
-            cardRect.DOMove(to.position, duration)
-                   .SetEase(Ease.OutQuad)
-                   .OnComplete(() => {
-                       if (animCard != null)
-                           Destroy(animCard);
-                   });
-                   
-            cardRect.DOScale(0.8f, duration);
-        }
-        
-        #endregion
+            // 前の選択をクリア
+            ClearCardSelection();
 
-        #region Event Handlers
-        
-        private void OnSearchChanged(string query)
-        {
-            searchQuery = query;
-            ApplyFilters();
-        }
-        
-        private void OnTypeFilterChanged(int index)
-        {
-            selectedType = (CardType)index;
-            ApplyFilters();
-        }
-        
-        private void OnRarityFilterChanged(int index)
-        {
-            selectedRarity = (CardRarity)index;
-            ApplyFilters();
-        }
-        
-        private void OnCostFilterChanged(int index)
-        {
-            selectedCost = index - 1; // -1 for "All"
-            ApplyFilters();
-        }
-        
-        private void OnShowOnlyOwnedChanged(bool showOwned)
-        {
-            showOnlyOwned = showOwned;
-            ApplyFilters();
-        }
-        
-        public void OnCardSlotClicked(DeckCardSlot slot)
-        {
-            var card = slot.GetCard();
-            if (card != null)
+            // 新しい選択を設定
+            selectedCard = card;
+            selectedCardObject = cardObject;
+
+            // 視覚的選択表示
+            var image = cardObject.GetComponent<Image>();
+            if (image != null)
             {
-                ShowCardPreview(card);
-                AddCardToDeck(card);
+                image.color = selectedCardColor;
             }
+
+            // プレビュー表示更新
+            UpdatePreviewPanel(card);
+
+            Debug.Log($"[DeckEditorController] Card selected: {card.CardData?.CardName ?? "Unknown"}");
         }
-        
-        public void OnDeckListItemClicked(DeckListItem item)
+
+        private void ClearCardSelection()
         {
-            var card = item.GetCard();
-            if (card != null)
+            if (selectedCardObject != null)
             {
-                ShowCardPreview(card);
+                var image = selectedCardObject.GetComponent<Image>();
+                if (image != null)
+                {
+                    image.color = Color.white;
+                }
             }
+
+            selectedCard = null;
+            selectedCardObject = null;
         }
-        
-        public void OnDeckListItemRemove(DeckListItem item)
+
+        private void UpdatePreviewPanel(Card card)
         {
-            var card = item.GetCard();
-            if (card != null)
-            {
-                RemoveCardFromDeck(card);
-            }
-        }
-        
-        private void ShowCardPreview(Card card)
-        {
-            if (card == null || previewPanel == null) return;
-            
-            previewedCard = card;
-            
-            // Update preview UI
-            if (previewCardName != null)
-                previewCardName.text = card.CardData.CardName;
-                
-            if (previewCardDesc != null)
-                previewCardDesc.text = card.CardData.RulesText ?? "No description available";
-            
-            if (previewCardStats != null)
-            {
-                string stats = GetCardStatsText(card);
-                previewCardStats.text = stats;
-            }
-            
-            // Show preview panel
+            if (previewPanel == null) return;
+
             previewPanel.gameObject.SetActive(true);
+
+            // プレビュー画像更新
+            if (cardPreviewImage != null)
+            {
+                cardPreviewImage.sprite = unknownCardSprite; // Phase 5で高解像度画像実装
+            }
+
+            // カード詳細テキスト更新
+            if (cardDetailsText != null)
+            {
+                cardDetailsText.text = GetCardDetailsText(card);
+            }
         }
-        
-        private string GetCardStatsText(Card card)
+
+        private string GetCardDetailsText(Card card)
         {
-            if (card.IsPokemonCard)
-            {
-                var pokemonData = card.GetPokemonData();
-                if (pokemonData != null)
-                {
-                    return $"HP: {pokemonData.HP}\nType: {pokemonData.Type}";
-                }
-            }
-            else if (card.IsEnergyCard)
-            {
-                var energyData = card.GetEnergyData();
-                if (energyData != null)
-                {
-                    return $"Energy Type: {energyData.EnergyType}";
-                }
-            }
+            if (card?.CardData == null) return "No card data";
             
-            return "Card Stats";
+            string details = $"{card.CardData.CardName}\n\n";
+            details += $"Type: {card.CardData.CardType}\n";
+            details += $"Rarity: {card.CardData.Rarity}\n";
+            details += $"\n{card.CardData.RulesText}";
+
+            return details;
         }
-        
+
         #endregion
 
         #region Deck Management
-        
-        private void SaveCurrentDeck()
+
+        public void AddCardToDeck(Card card)
         {
-            if (string.IsNullOrEmpty(currentDeckName))
-                currentDeckName = "Unnamed Deck";
-            
-            // In real implementation, save to persistent storage
-            Debug.Log($"[DeckEditorController] Saving deck: {currentDeckName} ({currentDeck.Count} cards)");
-            
-            // Simulate save success
-            ShowTemporaryMessage("Deck saved successfully!", Color.green);
-        }
-        
-        private void LoadDeck()
-        {
-            // In real implementation, show deck selection UI
-            Debug.Log("[DeckEditorController] Load deck functionality - would show deck selection UI");
-            
-            // For now, just clear and show message
-            ShowTemporaryMessage("Load deck feature coming soon!", Color.blue);
-        }
-        
-        private void ClearDeck()
-        {
-            currentDeck.Clear();
-            deckCardCounts.Clear();
-            
-            UpdateDeckDisplay();
-            UpdateCountDisplays();
-            RefreshCollectionDisplay(); // Refresh to update available counts
-            
-            Debug.Log("[DeckEditorController] Deck cleared");
-            ShowTemporaryMessage("Deck cleared", Color.yellow);
-        }
-        
-        private void ExportDeck()
-        {
-            if (currentDeck.Count == 0)
+            if (card == null) return;
+
+            // デッキサイズチェック
+            if (currentDeck.Count >= maxDeckSize)
             {
-                ShowTemporaryMessage("No cards in deck to export", Color.red);
+                Debug.LogWarning("[DeckEditorController] Deck is full!");
                 return;
             }
+
+            // 同名カード枚数制限チェック（通常4枚まで）
+            string cardName = card.CardData?.CardName ?? "Unknown";
+            int currentCount = deckCardCounts.GetValueOrDefault(cardName, 0);
             
-            // Create JSON representation of deck
-            var deckData = new DeckExportData
+            if (currentCount >= 4)
             {
-                DeckName = currentDeckName,
-                Cards = currentDeck.Select(c => c.CardData.CardId).ToList()
-            };
-            
-            string json = JsonUtility.ToJson(deckData, true);
-            Debug.Log($"[DeckEditorController] Exported deck JSON:\n{json}");
-            
-            ShowTemporaryMessage("Deck exported to console", Color.green);
+                Debug.LogWarning($"[DeckEditorController] Cannot add more {cardName} - limit reached");
+                return;
+            }
+
+            // デッキに追加
+            currentDeck.Add(card);
+            deckCardCounts[cardName] = currentCount + 1;
+
+            // デッキ表示更新
+            RefreshDeckDisplay();
+
+            // アニメーション
+            AnimateCardAddToDeck(card);
+
+            Debug.Log($"[DeckEditorController] Added {cardName} to deck ({currentDeck.Count}/{maxDeckSize})");
+
+            // イベント通知
+            EventBus.Emit(new CardAddedToDeckEvent { Card = card, DeckSize = currentDeck.Count });
         }
-        
-        private void ImportDeck()
+
+        public void RemoveCardFromDeck(Card card)
         {
-            Debug.Log("[DeckEditorController] Import deck functionality - would show file browser");
-            ShowTemporaryMessage("Import deck feature coming soon!", Color.blue);
+            if (card == null || !currentDeck.Contains(card)) return;
+
+            // デッキから削除
+            currentDeck.Remove(card);
+            string cardName = card.CardData?.CardName ?? "Unknown";
+            int currentCount = deckCardCounts.GetValueOrDefault(cardName, 0);
+            
+            if (currentCount > 1)
+            {
+                deckCardCounts[cardName] = currentCount - 1;
+            }
+            else
+            {
+                deckCardCounts.Remove(cardName);
+            }
+
+            // デッキ表示更新
+            RefreshDeckDisplay();
+
+            Debug.Log($"[DeckEditorController] Removed {cardName} from deck ({currentDeck.Count}/{maxDeckSize})");
+
+            // イベント通知
+            EventBus.Emit(new CardRemovedFromDeckEvent { Card = card, DeckSize = currentDeck.Count });
         }
-        
-        private void ShowTemporaryMessage(string message, Color color)
+
+        private void RefreshDeckDisplay()
         {
-            Debug.Log($"[DeckEditorController] {message}");
-            // In real implementation, show UI toast message
+            if (deckContent == null) return;
+
+            // 既存デッキ表示をクリア
+            ClearDeckDisplay();
+
+            // デッキカードを種類別に表示
+            DisplayDeckCards();
+
+            // デッキ統計更新
+            UpdateDeckStats();
         }
-        
+
+        private void ClearDeckDisplay()
+        {
+            for (int i = deckContent.childCount - 1; i >= 0; i--)
+            {
+                DestroyImmediate(deckContent.GetChild(i).gameObject);
+            }
+        }
+
+        private void DisplayDeckCards()
+        {
+            var groupedCards = deckCardCounts.GroupBy(kvp => kvp.Key)
+                .OrderBy(g => g.Key)
+                .ToList();
+
+            foreach (var group in groupedCards)
+            {
+                string cardName = group.Key;
+                int count = group.First().Value;
+                var card = currentDeck.FirstOrDefault(c => (c.CardData?.CardName ?? "Unknown") == cardName);
+
+                if (card != null)
+                {
+                    CreateDeckCardEntry(card, count);
+                }
+            }
+        }
+
+        private void CreateDeckCardEntry(Card card, int count)
+        {
+            GameObject entryObj = new GameObject($"DeckEntry_{card.CardData?.CardName ?? "Unknown"}");
+            entryObj.transform.SetParent(deckContent, false);
+
+            // 水平レイアウト
+            var horizontalLayout = entryObj.AddComponent<HorizontalLayoutGroup>();
+            horizontalLayout.childControlWidth = false;
+            horizontalLayout.childControlHeight = false;
+            horizontalLayout.childForceExpandWidth = false;
+            horizontalLayout.childForceExpandHeight = false;
+
+            // カウントテキスト
+            CreateDeckEntryText(entryObj, $"{count}x", 40);
+            
+            // カード名テキスト
+            CreateDeckEntryText(entryObj, card.CardData?.CardName ?? "Unknown", 200);
+
+            // 削除ボタン
+            CreateDeckEntryRemoveButton(entryObj, card);
+
+            // RectTransform設定
+            var rectTransform = entryObj.GetComponent<RectTransform>();
+            rectTransform.sizeDelta = new Vector2(300, 30);
+        }
+
+        private void CreateDeckEntryText(GameObject parent, string text, float width)
+        {
+            GameObject textObj = new GameObject("Text");
+            textObj.transform.SetParent(parent.transform, false);
+
+            var textComponent = textObj.AddComponent<Text>();
+            textComponent.text = text;
+            textComponent.fontSize = 14;
+            textComponent.color = Color.white;
+            textComponent.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            var rectTransform = textObj.GetComponent<RectTransform>();
+            rectTransform.sizeDelta = new Vector2(width, 30);
+        }
+
+        private void CreateDeckEntryRemoveButton(GameObject parent, Card card)
+        {
+            GameObject buttonObj = new GameObject("RemoveButton");
+            buttonObj.transform.SetParent(parent.transform, false);
+
+            var button = buttonObj.AddComponent<Button>();
+            var image = buttonObj.AddComponent<Image>();
+            image.color = new Color(1, 0.2f, 0.2f, 0.8f);
+
+            button.onClick.AddListener(() => RemoveCardFromDeck(card));
+
+            // ボタンテキスト
+            GameObject buttonTextObj = new GameObject("ButtonText");
+            buttonTextObj.transform.SetParent(buttonObj.transform, false);
+            
+            var buttonText = buttonTextObj.AddComponent<Text>();
+            buttonText.text = "-";
+            buttonText.fontSize = 16;
+            buttonText.color = Color.white;
+            buttonText.alignment = TextAnchor.MiddleCenter;
+            buttonText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+
+            var buttonRect = buttonObj.GetComponent<RectTransform>();
+            buttonRect.sizeDelta = new Vector2(30, 25);
+        }
+
+        private void UpdateDeckStats()
+        {
+            if (deckCountText != null)
+            {
+                deckCountText.text = $"Deck: {currentDeck.Count}/{maxDeckSize}";
+                
+                // 色分け（完成デッキは緑、未完成は赤）
+                if (currentDeck.Count == maxDeckSize)
+                {
+                    deckCountText.color = Color.green;
+                }
+                else if (currentDeck.Count < minDeckSize)
+                {
+                    deckCountText.color = Color.red;
+                }
+                else
+                {
+                    deckCountText.color = Color.yellow;
+                }
+            }
+
+            if (deckStatsText != null)
+            {
+                var pokemonCount = currentDeck.Count(c => c.CardData?.CardType == CardType.Pokemon);
+                var trainerCount = currentDeck.Count(c => c.CardData?.CardType == CardType.Trainer);
+                var energyCount = currentDeck.Count(c => c.CardData?.CardType == CardType.Energy);
+
+                deckStatsText.text = $"Pokemon: {pokemonCount} | Trainer: {trainerCount} | Energy: {energyCount}";
+            }
+        }
+
         #endregion
 
-        #region Unity Lifecycle
-        
-        private void Awake()
+        #region Animation System
+
+        private void AnimateCardAddToDeck(Card card)
         {
-            // Auto-initialize when the deck editor is first created
+            // カードがデッキに追加されるアニメーション
+            if (selectedCardObject != null)
+            {
+                var cardTransform = selectedCardObject.transform;
+                var originalPos = cardTransform.position;
+                var targetPos = deckBuilderPanel.position;
+
+                // 一時的なアニメーション用オブジェクト作成
+                var animObj = Instantiate(selectedCardObject, cardTransform.parent);
+                animObj.transform.position = originalPos;
+
+                var tween = animObj.transform.DOMove(targetPos, cardAnimationSpeed)
+                    .SetEase(cardMoveCurve)
+                    .OnComplete(() => {
+                        Destroy(animObj);
+                    });
+
+                activeTweens.Add(tween);
+            }
+        }
+
+        #endregion
+
+        #region Event Handlers
+
+        private void OnCardDatabaseLoaded(CardDatabaseLoadedEvent evt)
+        {
+            LoadCardDatabase();
+            RefreshCollectionDisplay();
+        }
+
+        private void OnDeckValidationRequested(DeckValidationRequestEvent evt)
+        {
+            ValidateDeck();
+        }
+
+        #endregion
+
+        #region Deck Validation
+
+        public bool ValidateDeck()
+        {
+            var validationResults = new List<string>();
+
+            // サイズチェック
+            if (currentDeck.Count != maxDeckSize)
+            {
+                validationResults.Add($"Deck must contain exactly {maxDeckSize} cards (current: {currentDeck.Count})");
+            }
+
+            // カード枚数制限チェック
+            foreach (var kvp in deckCardCounts)
+            {
+                if (kvp.Value > 4)
+                {
+                    validationResults.Add($"Too many {kvp.Key} ({kvp.Value}/4)");
+                }
+            }
+
+            // 結果通知
+            bool isValid = validationResults.Count == 0;
+            EventBus.Emit(new DeckValidationResultEvent 
+            { 
+                IsValid = isValid, 
+                ValidationErrors = validationResults 
+            });
+
+            return isValid;
+        }
+
+        #endregion
+
+        #region Public Interface
+
+        /// <summary>
+        /// デッキエディターを開く
+        /// </summary>
+        public void OpenDeckEditor()
+        {
+            gameObject.SetActive(true);
             if (!isInitialized)
             {
                 Initialize();
             }
+            RefreshCollectionDisplay();
         }
-        
+
+        /// <summary>
+        /// デッキエディターを閉じる
+        /// </summary>
+        public void CloseDeckEditor()
+        {
+            gameObject.SetActive(false);
+            EventBus.Emit(new DeckEditorClosedEvent());
+        }
+
+        /// <summary>
+        /// 新しいデッキを作成
+        /// </summary>
+        public void CreateNewDeck()
+        {
+            currentDeck.Clear();
+            deckCardCounts.Clear();
+            RefreshDeckDisplay();
+            ClearCardSelection();
+            
+            Debug.Log("[DeckEditorController] New deck created");
+        }
+
+        /// <summary>
+        /// 現在のデッキを取得
+        /// </summary>
+        public List<Card> GetCurrentDeck()
+        {
+            return new List<Card>(currentDeck);
+        }
+
+        #endregion
+
+        #region Cleanup
+
+        public void Cleanup()
+        {
+            // イベント購読解除
+            EventBus.Off<CardDatabaseLoadedEvent>(OnCardDatabaseLoaded);
+            EventBus.Off<DeckValidationRequestEvent>(OnDeckValidationRequested);
+
+            // アニメーション停止
+            foreach (var tween in activeTweens)
+            {
+                if (tween != null && tween.IsActive())
+                {
+                    tween.Kill();
+                }
+            }
+            activeTweens.Clear();
+
+            // データクリア
+            currentDeck.Clear();
+            deckCardCounts.Clear();
+            allCards.Clear();
+            filteredCards.Clear();
+            displayedCardObjects.Clear();
+
+            isInitialized = false;
+        }
+
         private void OnDestroy()
         {
-            // Cleanup
-            ClearCollectionSlots();
-            ClearDeckListItems();
+            Cleanup();
         }
-        
+
         #endregion
     }
 
     #region Support Classes
-    
-    // Deck card slot component for collection display
-    public class DeckCardSlot : MonoBehaviour
+
+    /// <summary>
+    /// カードドラッグハンドラー
+    /// </summary>
+    public class CardDragHandler : MonoBehaviour, 
+        UnityEngine.EventSystems.IBeginDragHandler,
+        UnityEngine.EventSystems.IDragHandler,
+        UnityEngine.EventSystems.IEndDragHandler
     {
         private Card card;
-        private DeckEditorController deckEditor;
-        private Image cardImage;
-        private TextMeshProUGUI cardNameText;
-        private TextMeshProUGUI cardCountText;
-        private Button clickButton;
-        
-        public void Initialize(Card cardData, DeckEditorController editor)
+        private DeckEditorController controller;
+        private Vector3 originalPosition;
+        private Transform originalParent;
+
+        public void Initialize(Card card, DeckEditorController controller)
         {
-            card = cardData;
-            deckEditor = editor;
-            
-            // Get UI components
-            cardImage = GetComponent<Image>();
-            cardNameText = GetComponentInChildren<TextMeshProUGUI>();
-            clickButton = GetComponent<Button>();
-            
-            if (clickButton == null)
-                clickButton = gameObject.AddComponent<Button>();
-            
-            // Set up click handler
-            clickButton.onClick.RemoveAllListeners();
-            clickButton.onClick.AddListener(() => deckEditor.OnCardSlotClicked(this));
-            
-            // Update display
-            UpdateDisplay();
+            this.card = card;
+            this.controller = controller;
         }
-        
-        public void SetCardCount(int owned, int used)
+
+        public void OnBeginDrag(UnityEngine.EventSystems.PointerEventData eventData)
         {
-            if (cardCountText != null)
+            originalPosition = transform.position;
+            originalParent = transform.parent;
+            
+            // ドラッグ中は最前面に表示
+            transform.SetParent(controller.transform.root, true);
+        }
+
+        public void OnDrag(UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            transform.position = eventData.position;
+        }
+
+        public void OnEndDrag(UnityEngine.EventSystems.PointerEventData eventData)
+        {
+            // ドロップ先判定
+            if (IsOverDeckArea(eventData.position))
             {
-                cardCountText.text = $"{owned - used}/{owned}";
-                cardCountText.color = (owned - used > 0) ? Color.white : Color.red;
+                controller.AddCardToDeck(card);
             }
+
+            // 元の位置に戻す
+            transform.SetParent(originalParent, true);
+            transform.position = originalPosition;
         }
-        
-        private void UpdateDisplay()
+
+        private bool IsOverDeckArea(Vector2 position)
         {
-            if (card == null) return;
-            
-            // Set card name
-            if (cardNameText != null)
-                cardNameText.text = card.CardData.CardName;
-            
-            // Set placeholder image (in real implementation, load actual card image)
-            if (cardImage != null)
-            {
-                cardImage.color = GetCardTypeColor(card);
-            }
+            var deckRect = controller.deckBuilderPanel.GetComponent<RectTransform>();
+            return RectTransformUtility.RectangleContainsScreenPoint(deckRect, position);
         }
-        
-        private Color GetCardTypeColor(Card card)
-        {
-            if (card.IsPokemonCard) return new Color(1f, 0.8f, 0.8f); // Light red
-            if (card.IsTrainerCard) return new Color(0.8f, 1f, 0.8f); // Light green  
-            if (card.IsEnergyCard) return new Color(0.8f, 0.8f, 1f); // Light blue
-            return Color.white;
-        }
-        
-        public Card GetCard() => card;
     }
-    
-    // Deck list item component for deck display
-    public class DeckListItem : MonoBehaviour
-    {
-        private Card card;
-        private int count;
-        private DeckEditorController deckEditor;
-        private TextMeshProUGUI cardNameText;
-        private TextMeshProUGUI cardCountText;
-        private Button removeButton;
-        
-        public void Initialize(Card cardData, int cardCount, DeckEditorController editor)
-        {
-            card = cardData;
-            count = cardCount;
-            deckEditor = editor;
-            
-            // Get UI components
-            cardNameText = GetComponentsInChildren<TextMeshProUGUI>()[0];
-            if (GetComponentsInChildren<TextMeshProUGUI>().Length > 1)
-                cardCountText = GetComponentsInChildren<TextMeshProUGUI>()[1];
-                
-            removeButton = GetComponentInChildren<Button>();
-            
-            // Set up click handlers
-            if (removeButton != null)
-            {
-                removeButton.onClick.RemoveAllListeners();
-                removeButton.onClick.AddListener(() => deckEditor.OnDeckListItemRemove(this));
-            }
-            
-            // Update display
-            UpdateDisplay();
-        }
-        
-        private void UpdateDisplay()
-        {
-            if (card == null) return;
-            
-            if (cardNameText != null)
-                cardNameText.text = card.CardData.CardName;
-                
-            if (cardCountText != null)
-                cardCountText.text = $"x{count}";
-        }
-        
-        public Card GetCard() => card;
-        public int GetCount() => count;
-    }
-    
-    // Enums for filtering
-    public enum CardType
+
+    /// <summary>
+    /// カードフィルタータイプ
+    /// </summary>
+    public enum CardFilterType
     {
         All,
         Pokemon,
         Trainer,
         Energy
     }
-    
-    public enum CardRarity
-    {
-        All,
-        Common,
-        Uncommon,
-        Rare,
-        UltraRare
+
+    #endregion
+
+    #region Event Classes
+
+    public class DeckEditorOpenedEvent { }
+    public class DeckEditorClosedEvent { }
+
+    public class CardAddedToDeckEvent 
+    { 
+        public Card Card { get; set; }
+        public int DeckSize { get; set; }
     }
-    
-    // Data classes
-    [System.Serializable]
-    public class DeckExportData
-    {
-        public string DeckName;
-        public List<string> Cards;
+
+    public class CardRemovedFromDeckEvent 
+    { 
+        public Card Card { get; set; }
+        public int DeckSize { get; set; }
     }
-    
+
+    public class DeckValidationRequestEvent { }
+
+    public class DeckValidationResultEvent 
+    { 
+        public bool IsValid { get; set; }
+        public List<string> ValidationErrors { get; set; }
+    }
+
+    public class CardDatabaseLoadedEvent { }
+
     #endregion
 }
